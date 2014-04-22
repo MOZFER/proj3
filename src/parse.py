@@ -1,6 +1,8 @@
 import re
 import pickle
 from itertools import islice
+import numpy as np
+import pandas as pd
 
 '''
 data structure:
@@ -13,12 +15,18 @@ data structure:
     }
 
     (trans matrix)
-    A = {
-        (<s>, pos): count, (<s>, neg): count, ...
-    }
+    A = 
+    df:
+        <r> neg neu pos </r>
+    <r>  0 ...
+    neg  0 ...
+    neu  0 ...
+    pos  0 ...
+    </r> 0 ...
+
 '''
 
-path = "/Users/georgeberry/Google Drive/Spring 2014/CS5740/proj3/training_data.txt"
+path = "/Users/g/Google Drive/Spring 2014/CS5740/proj3/data/training_data.txt"
 
 lower_first = lambda s: s[:1].lower() + s[1:] if s else ''
 
@@ -36,12 +44,14 @@ def window(iterable, size):
         result = result[1:] + (item,)
         yield result
 
+states = ["<r>", "neg", "neu", "pos", "</r>"]
 
 #returns the HMM transition matrix 
 #returns counts for words conditional on sentiment
 def parse_text(path, n = 1):
 
-    A = {} #hmm transitions
+    A = pd.DataFrame(np.zeros((5,5)), index = states, columns = states)
+    A.loc["</r>", "</r>"] = 1 #just to prevent NAs
     emission_dict = {'pos': {}, 'neg': {}, 'neu': {}}
 
     with open(path, 'rb') as f:
@@ -52,6 +62,11 @@ def parse_text(path, n = 1):
     t2 = re.split(r'\n\n', text)
     t2.pop()
 
+    #for unk words
+    #start with these, they'll be ignored
+    seen_words = set(["!", ".", ",", "<s>", "</s>", ":", "'", "\"", "/", "\\"]) 
+    unk = "<unk>"
+
     for review in t2:
         r = review.split('\n')
         review_type = r.pop(0)
@@ -61,15 +76,13 @@ def parse_text(path, n = 1):
         #these are transitions states in the HMM
         r = ["<r>\t"] + r + ["</r>\t"]
 
-        prev = r.pop(0).split('\t')[0]
+        prev = r.pop(0).split('\t')[0] #starting sentiment, <r>
 
-        #only contains sentences now
+        #only contains sentences and the end token
         for line in r:
             sentiment, sentence = line.split('\t')
 
-            if (prev, sentiment) not in A:
-                A[(prev, sentiment)] = 0
-            A[(prev, sentiment)] += 1
+            A.loc[prev, sentiment] += 1
             prev = sentiment
 
             #make first word of every sentence lowercase
@@ -89,10 +102,21 @@ def parse_text(path, n = 1):
 
             sentence = re.split(r' +', sentence)
 
+            #for unk
+            for word in range(len(sentence)):
+                if sentence[word] not in seen_words:
+                    seen_words.add(sentence[word]) #add to seen words
+                    sentence[word] = unk #overwrite
+
             for gram_tuple in window(sentence, n):
                 if sentiment != "</r>":
                     if gram_tuple not in emission_dict[sentiment]:
                         emission_dict[sentiment][gram_tuple] = 0
                     emission_dict[sentiment][gram_tuple] += 1
+
+    s = A.sum(axis=1) #row sums
+
+    for item in s.index:
+        A.loc[item,:] = A.loc[item,:]/s.loc[item] #divide row by row sum
 
     return A, emission_dict
