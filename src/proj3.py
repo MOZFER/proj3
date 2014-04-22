@@ -31,4 +31,4 @@ A, emission_dict = parse_text(path)
 e = features(emission_dict)
 e.gen_prob(1000)
 
-viterbi([["the", "cat", "went", "to", "the", "barn"]], e, A)
+viterbi([["the", "cat", "went", "to", "the", "barn"],["the","happy","dog","ran"]], e, A)

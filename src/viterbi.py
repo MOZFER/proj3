@@ -29,8 +29,8 @@ def viterbi(obs_list, e, trans_matrix):
     #initialize
     for state in states:
         b = obs_list[0]
-        viterbi_prob.loc[state, 1] = log(trans_matrix.loc["<r>", state], 2) + e.return_prob(state, b)
-        backpointer.loc[state, 1] = 0.
+        viterbi_prob.loc[state, 0] = math.log(trans_matrix.loc["<r>", state], 2) + e.return_prob(state, b)
+        backpointer.loc[state, 0] = 0.
 
     #intermedate steps (recursion)
     for t in range(1, len(obs_list)):
@@ -48,8 +48,9 @@ def viterbi(obs_list, e, trans_matrix):
     #end step
     viterbi_prob.loc["</r>", len(obs_list) - 1], backpointer.loc["</r>", len(obs_list) - 1] = \
         max( [ ( viterbi_prob.loc[s, len(obs_list) - 1] + \
-        log(trans_matrix.loc[s, "</r>"], 2), s) for s in states])
+        math.log(trans_matrix.loc[s, "</r>"], 2), s) for s in states])
 
     print(viterbi_prob)
+    print(backpointer)
 
     return viterbi_path

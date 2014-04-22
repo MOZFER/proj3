@@ -7,14 +7,14 @@ import pandas as pd
 '''
 data structure:
 
-    (review features)
+    ==review features==
     emission_dict = {
         'review sentiment': {
             'feature1' : count, 'feature2': count
         }
     }
 
-    (trans matrix)
+    ==trans matrix==
     A = 
     df:
         <r> neg neu pos </r>
@@ -92,7 +92,7 @@ def parse_text(path, n = 1):
             sentence = sentence.lower()
 
             #puts whitespace around everything except words and whitespace
-            sentence = re.sub(r'[^\w\s]', ' \g<0> ', sentence)
+            sentence = re.sub(r'[^\w\s\']', ' \g<0> ', sentence)
 
             #for ngrams n > 1, add n-1 start tokens and an end token
             if n > 1:
