@@ -3,6 +3,7 @@ import pandas as pd
 import re, math
 from itertools import islice
 from copy import deepcopy
+from scipy import stats
 
 #fast sliding window function
 def window(iterable, size):
@@ -18,15 +19,55 @@ def window(iterable, size):
         result = result[1:] + (item,)
         yield result
 
+
+def chi_squarify(totaltokens, totalfeatures, smoother = 0):
+    '''totaltokens should be a 3-tuple of the count of all positive,neutral, 
+    and negative words, totalfeatures are total counts of the feature occurring in pos,neu,neg'''
+    predictedfrequencies = []
+    observedfrequencies = []
+    n = totaltokens[0] + totaltokens[1] + totaltokens [2] + 6*smoother
+    features = totalfeatures[0] + totalfeatures[1] + totalfeatures[2] + 3*smoother
+    nonfeatures = n - features
+    positive = totaltokens[0] + totalfeatures[0] +2 * smoother
+    neutral = totaltokens[1] + totalfeatures[1] +2* smoother
+    negative = totaltokens[2] + totalfeatures[2] + 2*smoother
+    predictedfrequencies.append(float(positive*features/n))
+    predictedfrequencies.append(float(neutral*features/n))
+    predictedfrequencies.append(float(negative*features/n))
+    predictedfrequencies.append(float(positive*nonfeatures/n))
+    predictedfrequencies.append(float(neutral*nonfeatures/n))
+    predictedfrequencies.append(float(negative*nonfeatures/n))
+    observedfrequencies.append(totalfeatures[0] + smoother)
+    observedfrequencies.append(totalfeatures[1] + smoother)
+    observedfrequencies.append(totalfeatures[2] + smoother)
+    observedfrequencies.append(totaltokens[0] - totalfeatures[0] + smoother)
+    observedfrequencies.append(totaltokens[1] - totalfeatures[1] + smoother)
+    observedfrequencies.append(totaltokens[2] - totalfeatures[2] + smoother)
+    chistatistic = 0  
+    for x in range (0,6):
+        a = predictedfrequencies[x] - observedfrequencies[x]
+        b = a*a/predictedfrequencies[x]
+        chistatistic = b + chistatistic
+    return chistatistic
+
+
+#def chi_square_filter(fetures, smoother, cutoff):
+#    returnedfeatures = []
+#    for x in features:
+#        y = chisquarify
+
+
 class Classifier:
     '''
     n is the length of n-grams to use, should be set to 1 or 2
     k is the good-turing cutoff (i.e. we stop smoothing when count is > k)
     x is the smoothing parameter for the transition matrix
+    c is the chi-square stat
     '''
-    def __init__(self, std_format_text, n = 1, k = 5, x = 0): #n can equal 1,2,3
+    def __init__(self, std_format_text, n = 1, k = 5, x = 0, c = 5.): #n can equal 1,2,3
 
         self.n = n
+        self.c = c
 
         self.sentiments = ["neg", "neu", "pos"]
 
@@ -65,11 +106,7 @@ class Classifier:
             self.gt_trigram_counts = self.sum_counts(self.gt_trigrams)
 
         self.admissible_features = set()
-
-
-
-
-
+        self.admissible()
 
     #converts text to dictionary keyed by sentiment
     #handles unknown words
@@ -112,6 +149,8 @@ class Classifier:
                     if sentence[word] not in self.seen_words:
                         self.seen_words.add(sentence[word]) #add to seen words
                         sentence[word] = self.unk #overwrite
+
+        self.seen_words.remove('')
 
         s = A.sum(axis=1)
 
@@ -215,11 +254,14 @@ class Classifier:
                         freq_of_freqs[v] = 0
                     freq_of_freqs[v] += 1
 
-            #treating these as different corpora here
-            #smooth feature dict
-            #for s in self.sentiments:
+            #smooth using the freq_of_freqs
+            for s in self.sentiments:
                 for f, v in feature_dict[s].items():
                     smoothed_feature_dict[s][f] = self.gt_counts(v, cutoff, freq_of_freqs)
+
+                for word in self.seen_words:
+                    if word not in smoothed_feature_dict[s]:
+                        smoothed_feature_dict[s][word] = freq_of_freqs[1]/sum([v for k,v in freq_of_freqs.items()])
 
         #for bigrams/trigrams
         elif n > 1:
@@ -231,7 +273,7 @@ class Classifier:
                         freq_of_freqs[v] += 1
 
             #smooth feature dict
-            #for s in self.sentiments:
+            for s in self.sentiments:
                 for f1 in feature_dict[s]:
                     for f2, v in feature_dict[s][f1].items():
                         smoothed_feature_dict[s][f1][f2] = self.gt_counts(v, cutoff, freq_of_freqs)
@@ -251,6 +293,21 @@ class Classifier:
         else:
             #c* equaiton from page 103
             return ( ( (c+1)*(ffd[c+1]/ffd[c]) ) - ( c*( (k + 1)*ffd[k+1] )/ffd[1] ) )/(1 - ( (k+1)*(ffd[k+1])/ffd[1] ) )
+
+    #do this just for unigrams
+    def admissible(self, kind = "chi"):
+        if kind == "chi": 
+            for word in self.seen_words:
+                word_count = [self.gt_unigrams[x].get(word, 0) for x in self.sentiments]
+                sentiment_count = [self.gt_unigram_counts[x] for x in self.sentiments]
+
+                chi_sqr = chi_squarify(sentiment_count, word_count)
+
+                if chi_sqr > self.c:
+                    self.admissible_features.add(word)
+        elif kind == "logodds":
+            pass
+
 
     #give this a unigram, bigram, or trigram
     def katz_backoff(self, n_gram):
@@ -278,11 +335,11 @@ class Classifier:
         if self.n == 1:
             log_prob_sum = 0
             for word in words:
-                if word in self.gt_unigrams:
+                if word in self.admissible_features:
                     log_prob_sum += math.log(self.gt_unigrams[sentiment][word]/self.gt_unigram_counts[sentiment], 2)
                 else:
                     continue
-                    #log_prob_sum += math.log(1/3, 2)
+                    #log_prob_sum += math.log(self.gt_unigrams[sentiment]['<unk>']/self.gt_unigram_counts[sentiment], 2)
             return log_prob_sum
 
 
