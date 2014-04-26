@@ -19,7 +19,12 @@ def window(iterable, size):
         yield result
 
 class Classifier:
-    def __init__(self, std_format_text, n = 1, k = 5): #n can equal 1,2,3
+    '''
+    n is the length of n-grams to use, should be set to 1 or 2
+    k is the good-turing cutoff (i.e. we stop smoothing when count is > k)
+    x is the smoothing parameter for the transition matrix
+    '''
+    def __init__(self, std_format_text, n = 1, k = 5, x = 0): #n can equal 1,2,3
 
         self.n = n
 
@@ -30,6 +35,16 @@ class Classifier:
         self.unk = "<unk>"
 
         self.A, self.sentences_by_sentiment = self.parse_text(std_format_text, n)
+
+        #makes the transitions less biased towards staying in same state
+        #we don't change the x --> </r> probabilities
+        if x > 0:  
+            for s1 in self.sentiments + ["<r>"]: #go down rows
+                #go across cols
+                total_prob = sum([self.A.loc[s1, x] for x in self.sentiments])
+
+                for s2 in self.sentiments:
+                    self.A.loc[s1, s2] = total_prob*(self.A.loc[s1, s2] + .1*x)/(total_prob + .3*x)
 
         self.vocab = self.make_vocab(self.sentences_by_sentiment)
 
@@ -50,6 +65,10 @@ class Classifier:
             self.gt_trigram_counts = self.sum_counts(self.gt_trigrams)
 
         self.admissible_features = set()
+
+
+
+
 
 
     #converts text to dictionary keyed by sentiment
@@ -120,7 +139,7 @@ class Classifier:
         sentence = sentence.lower()
 
         #puts whitespace around everything except words and whitespace
-        sentence = re.sub(r'[^\w\s\')]', ' \g<0> ', sentence)
+        sentence = re.sub(r'[^\w\s\']', ' \g<0> ', sentence)
         sentence = sentence.strip()
 
         #for ngrams n > 1, add n-1 start tokens and an end token
@@ -255,22 +274,26 @@ class Classifier:
 
                 return alpha*self.gt_unigrams[w2]
 
-    def return_prob(self, state, words):
+    def return_prob(self, sentiment, words):
         if self.n == 1:
             log_prob_sum = 0
-            print(words)
             for word in words:
                 if word in self.gt_unigrams:
-                    log_prob_sum += math.log(self.gt_unigrams[state][word]/self.gt_unigram_counts[state])
+                    log_prob_sum += math.log(self.gt_unigrams[sentiment][word]/self.gt_unigram_counts[sentiment], 2)
                 else:
-                    log_prob_sum += math.log(self.gt_unigrams[state]["<unk>"]/self.gt_unigram_counts[state])
+                    continue
+                    #log_prob_sum += math.log(1/3, 2)
+            return log_prob_sum
 
 
     def viterbi(self, review):
         r = self.clean_review(review)
-        sentences = [self.tokenize_sentence(x, self.n) for x in r]
-        sentences.pop()
-        sentences.pop(0)
+        r.pop()
+        r.pop(0)
+
+        ground_truth = [self.tokenize_sentence(x, self.n)[0] for x in r]
+
+        sentences = [self.tokenize_sentence(x, self.n)[1] for x in r]
         num_sentences = len(sentences)
 
         #this is the probabiliy of being in a state at time t
@@ -280,10 +303,10 @@ class Classifier:
         backpointer = pd.DataFrame(np.zeros([len(self.A.index), num_sentences]), index = self.A.index)
 
         #initialize
-        for state in self.sentiments:
+        for sentiment in self.sentiments:
             b = sentences[0]
-            viterbi_prob.loc[state, 0] = math.log(self.A.loc["<r>", state], 2) + self.return_prob(state, b)
-            backpointer.loc[state, 0] = 0.
+            viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<r>", sentiment], 2) + self.return_prob(sentiment, b)
+            backpointer.loc[sentiment, 0] = 0.
 
         #intermedate steps (recursion)
         for t in range(1, num_sentences):
@@ -303,10 +326,28 @@ class Classifier:
             max( [ ( viterbi_prob.loc[s, num_sentences - 1] + \
             math.log(self.A.loc[s, "</r>"], 2), s) for s in self.sentiments])
 
-        #print(viterbi_prob)
-        #print(backpointer)
+        sequence = [ backpointer.loc["</r>", num_sentences-1] ]
+        row_lookup = backpointer.loc["</r>", num_sentences-1]
 
-        return viterbi_prob, backpointer
+        for col in range(num_sentences - 1, -1, -1):
+            row_lookup = backpointer.loc[row_lookup, col]
+            sequence.append(row_lookup)
 
+        sequence.reverse()
+        sequence.pop(0)
 
+        return sequence, ground_truth
 
+    def correct_share(self, reviews):
+
+        total = 0
+        correct = 0
+
+        for review in reviews:
+            predicted, ground_truth = self.viterbi(review)
+            for s in range(len(predicted)):
+                total += 1
+                if predicted[s] == ground_truth[s]:
+                    correct += 1
+
+        return correct/total
