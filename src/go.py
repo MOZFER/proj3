@@ -29,11 +29,17 @@ reviews = get_reviews(path)
 folds = k_folds(reviews, 10)
 
 #k fold valid!
+s = 0
+
 for f in range(len(folds)):
+
+
     f1 = folds[:f] + folds[(f+1):]
     #flatten
     f1 = [item for sublist in f1 for item in sublist]
     #make classifier
-    c = Classifier(f1, x = 10, c = 5)
+    c = Classifier(f1, x = 5, c = 2.5)
     f2 = folds[f]
-    print(c.correct_share(f2))
+    s += c.correct_share(f2)
+
+print(s/len(folds))
