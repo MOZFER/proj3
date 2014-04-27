@@ -75,7 +75,7 @@ class Classifier:
         self.seen_words = set(["!", ".", ",", "<s>", "</s>", ":", ";", "'", "\"", "/", "\\"]) 
         self.unk = "<unk>"
 
-        self.A, self.sentences_by_sentiment = self.parse_text(std_format_text, n)
+        self.A, self.sentences_by_sentiment = self.parse_text(std_format_text)
 
         #makes the transitions less biased towards staying in same state
         #we don't change the x --> </r> probabilities
@@ -87,23 +87,21 @@ class Classifier:
                 for s2 in self.sentiments:
                     self.A.loc[s1, s2] = total_prob*(self.A.loc[s1, s2] + .1*x)/(total_prob + .3*x)
 
-        self.vocab = self.make_vocab(self.sentences_by_sentiment)
-
-        if 1 <= n:
+        if n >= 1:
             self.unigrams          = self.make_features(self.sentences_by_sentiment, 1)
-            self.unigram_counts    = self.sum_counts(self.unigrams)
+            self.unigram_counts    = self.sum_counts(self.unigrams, 1)
             self.gt_unigrams       = self.good_turing(self.unigrams, 1, k)
-            self.gt_unigram_counts = self.sum_counts(self.gt_unigrams)
-        if 2 <= n:
+            self.gt_unigram_counts = self.sum_counts(self.gt_unigrams, 1)
+        if n >= 2:
             self.bigrams           = self.make_features(self.sentences_by_sentiment, 2)
-            self.bigram_counts     = self.sum_counts(self.bigrams)
+            self.bigram_counts     = self.sum_counts(self.bigrams, 2)
             self.gt_bigrams        = self.good_turing(self.bigrams,  2, k)
-            self.gt_bigram_counts  = self.sum_counts(self.gt_bigrams)
-        if 3 <= n:
+            self.gt_bigram_counts  = self.sum_counts(self.gt_bigrams, 2)
+        if n >= 3:
             self.trigrams          = self.make_features(self.sentences_by_sentiment, 3)
-            self.trigram_counts    = self.sum_counts(self.trigrams)
+            self.trigram_counts    = self.sum_counts(self.trigrams, 3)
             self.gt_trigrams       = self.good_turing(self.trigrams, 3, k)
-            self.gt_trigram_counts = self.sum_counts(self.gt_trigrams)
+            self.gt_trigram_counts = self.sum_counts(self.gt_trigrams, 3)
 
         self.admissible_features = set()
         self.admissible()
@@ -112,7 +110,7 @@ class Classifier:
     #handles unknown words
     #with list of sentences as the values
     #also gets transition matrix
-    def parse_text(self, std_format_text, n):
+    def parse_text(self, std_format_text):
 
         sentence_sentiment_dict = {s: [] for s in self.sentiments}
 
@@ -136,13 +134,7 @@ class Classifier:
 
             for line in r:
 
-                sentiment, sentence = self.tokenize_sentence(line, n)
-
-                if sentiment not in ["<r>", "</r>"]:
-                    sentence_sentiment_dict[sentiment].append(sentence)
-
-                A.loc[prev_sentiment, sentiment] += 1
-                prev_sentiment = sentiment
+                sentiment, sentence = self.tokenize_sentence(line, self.n)
 
                 #for unk
                 for word in range(len(sentence)):
@@ -150,7 +142,16 @@ class Classifier:
                         self.seen_words.add(sentence[word]) #add to seen words
                         sentence[word] = self.unk #overwrite
 
-        self.seen_words.remove('')
+                if sentiment not in ["<r>", "</r>"]:
+                    sentence_sentiment_dict[sentiment].append(sentence)
+
+                A.loc[prev_sentiment, sentiment] += 1
+                prev_sentiment = sentiment
+
+        try:
+            self.seen_words.remove('')
+        except:
+            pass
 
         s = A.sum(axis=1)
 
@@ -191,49 +192,44 @@ class Classifier:
 
         return sentiment, sentence
 
-    #returns the vocab
-    def make_vocab(self, parsed_text):
-        vocab = set()
-
-        for key in parsed_text:
-            for sentence in parsed_text[key]:
-                vocab | set(sentence)
-
-        return vocab
-
-    def sum_counts(self, count_dict):
-        sum_dict = {}
-        for s in self.sentiments:
-            sum_dict[s] = sum([v for k, v in count_dict[s].items()])
+    def sum_counts(self, count_dict, n):
+        sum_dict = {"pos": 0, "neg":0, "neu": 0}
+        if n == 1:
+            for s in self.sentiments:
+                sum_dict[s] = sum([v for k, v in count_dict[s].items()])
+        elif n == 2:
+            for s in self.sentiments:
+                for word1 in count_dict[s]:
+                    sum_dict[s] += sum([v for k, v in count_dict[s][word1].items()])
         return sum_dict
 
     #gets unigrams if n = 1, bigrams if n = 2, etc.
-    def make_features(self, parsed_text, n):
+    def make_features(self, parsed_text, z):
         feature_dict = {"pos": {}, "neg": {}, "neu": {}}
 
-        for key in parsed_text:
-            for sentence in parsed_text[key]:
-                for n_gram in window(sentence, n):
+        for sentiment in parsed_text:
+            for sentence in parsed_text[sentiment]:
+                for n_gram in window(sentence, z):
                     if len(n_gram) == 1:
                         #need n_gram[0] because it's a tuple
                         #just pull out the underlying string
                         gram = n_gram[0]
-                        if gram not in feature_dict[key]:
-                            feature_dict[key][gram] = 0
-                        feature_dict[key][gram] += 1
+                        if gram not in feature_dict[sentiment]:
+                            feature_dict[sentiment][gram] = 0
+                        feature_dict[sentiment][gram] += 1
 
                     #for bigrams and trigrams we do the "conditional feature" dict
-                    elif len(n_gram) > 1:
+                    elif len(n_gram) == 2:
                         w = n_gram[-1]
                         #beginning to second-to-last word
                         n_minus_one_gram = n_gram[:-1][0]
 
                         #dictionary here for fast lookup
-                        if n_minus_one_gram not in feature_dict[key]: 
-                            feature_dict[key][n_minus_one_gram] = {}
-                        if w not in feature_dict[key][n_minus_one_gram]:
-                            feature_dict[key][n_minus_one_gram][w] = 0
-                        feature_dict[key][n_minus_one_gram][w] += 1
+                        if n_minus_one_gram not in feature_dict[sentiment]: 
+                            feature_dict[sentiment][n_minus_one_gram] = {}
+                        if w not in feature_dict[sentiment][n_minus_one_gram]:
+                            feature_dict[sentiment][n_minus_one_gram][w] = 0
+                        feature_dict[sentiment][n_minus_one_gram][w] += 1
 
         return feature_dict
 
@@ -305,31 +301,9 @@ class Classifier:
 
                 if chi_sqr > self.c:
                     self.admissible_features.add(word)
+
         elif kind == "logodds":
             pass
-
-
-    #give this a unigram, bigram, or trigram
-    def katz_backoff(self, n_gram):
-        if len(n_gram) == 2:
-            #if we've seen the bigram
-            w1, w2 = n_gram
-
-            if w1 in self.bigrams and w2 in self.bigrams[w1]:
-                #sum of unsmoothed occurances of prev word
-                s = sum([v for k, v in self.bigrams[w1].items()])
-                return self.gt_bigrams[w1][w2] / s
-            else:
-                beta_complement = 0
-                s = sum([v for k, v in self.bigrams[w1].items()])
-
-                for w2 in self.gt_bigrams[w1]:
-                    beta_complement += self.gt_bigrams[w1][w2] / s
-
-                #denom is 1 since we're at the last step, so alpha = beta
-                alpha = 1 - beta_complement
-
-                return alpha*self.gt_unigrams[w2]
 
     def return_prob(self, sentiment, words):
         if self.n == 1:
@@ -342,6 +316,53 @@ class Classifier:
                     #log_prob_sum += math.log(self.gt_unigrams[sentiment]['<unk>']/self.gt_unigram_counts[sentiment], 2)
             return log_prob_sum
 
+        if self.n == 2:
+            log_prob_sum = 0
+            for bigram in window(words, 2):
+                log_prob_sum += self.katz_backoff_prob(bigram, sentiment)
+            return log_prob_sum
+
+    #give this a unigram, bigram, or trigram
+    def katz_backoff_prob(self, n_gram, sentiment):
+        if len(n_gram) == 2:
+            #if we've seen the bigram
+            w1, w2 = n_gram
+
+            if w1 in self.bigrams[sentiment] and w2 in self.bigrams[sentiment][w1]:
+                #sum of unsmoothed occurances of prev word
+                if w1 in self.admissible_features or w2 in self.admissible_features:
+                    s = sum([v for k, v in self.bigrams[sentiment][w1].items()])
+                    return math.log(self.gt_bigrams[sentiment][w1][w2] / s, 2)
+                else:
+                    return 0
+            elif w1 in self.bigrams[sentiment]:
+                #intuitively: if w1 is not in bigrams, then default to unigram with full prob
+                #if w1 is in bigrams but w2 is not in bigrams[w1], weighted unigram
+
+                beta_complement = 0
+                s = sum([v for k, v in self.bigrams[sentiment][w1].items()])
+
+                for word in self.gt_bigrams[sentiment][w1]:
+                    beta_complement += self.gt_bigrams[sentiment][w1][word]/s
+
+                #denom is 1 since we're at the last step, so alpha = beta
+                alpha = 1 - beta_complement
+
+                if w1 in self.admissible_features or w2 in self.admissible_features:
+                    return math.log(alpha*self.gt_unigrams[sentiment][w2], 2)
+                else:
+                    return 0
+
+            elif w1 not in self.bigrams[sentiment]:
+                if w2 in self.gt_unigrams[sentiment] and w2 in self.admissible_features:
+                    return math.log(self.gt_unigrams[sentiment][w2], 2)
+                else:
+                    return 0
+            else:
+                return 0
+        else:
+            return math.log(self.gt_unigrams[sentiment][n_gram], 2)
+
 
     def viterbi(self, review):
         r = self.clean_review(review)
@@ -351,6 +372,12 @@ class Classifier:
         ground_truth = [self.tokenize_sentence(x, self.n)[0] for x in r]
 
         sentences = [self.tokenize_sentence(x, self.n)[1] for x in r]
+
+        for sentence in sentences:
+            for word in range(len(sentence)):
+                if sentence[word] not in self.seen_words:
+                    sentence[word] = self.unk
+
         num_sentences = len(sentences)
 
         #this is the probabiliy of being in a state at time t
@@ -402,7 +429,7 @@ class Classifier:
 
         for review in reviews:
             predicted, ground_truth = self.viterbi(review)
-            for s in range(len(predicted)):
+            for s in range(len(ground_truth)):
                 total += 1
                 if predicted[s] == ground_truth[s]:
                     correct += 1

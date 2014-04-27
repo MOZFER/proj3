@@ -33,12 +33,11 @@ s = 0
 
 for f in range(len(folds)):
 
-
     f1 = folds[:f] + folds[(f+1):]
     #flatten
     f1 = [item for sublist in f1 for item in sublist]
     #make classifier
-    c = Classifier(f1, x = 5, c = 2.5)
+    c = Classifier(f1, n = 1, x = 5, k = 20, c = 5)
     f2 = folds[f]
     s += c.correct_share(f2)
 
