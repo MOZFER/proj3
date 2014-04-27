@@ -59,6 +59,9 @@ def chi_squarify(totaltokens, totalfeatures, smoother = 0):
 
 class Classifier:
     '''
+    when we init
+
+
     n is the length of n-grams to use, should be set to 1 or 2
     k is the good-turing cutoff (i.e. we stop smoothing when count is > k)
     x is the smoothing parameter for the transition matrix
@@ -78,7 +81,8 @@ class Classifier:
         self.A, self.sentences_by_sentiment = self.parse_text(std_format_text)
 
         #makes the transitions less biased towards staying in same state
-        #we don't change the x --> </r> probabilities
+        #does something very similar to laplace smoothing
+        #with large x, transitions tend towards parity
         if x > 0:  
             for s1 in self.sentiments + ["<r>"]: #go down rows
                 #go across cols
@@ -103,28 +107,24 @@ class Classifier:
             self.gt_trigrams       = self.good_turing(self.trigrams, 3, k)
             self.gt_trigram_counts = self.sum_counts(self.gt_trigrams, 3)
 
+        #this is a set of admissible features
+        #provides a quick check whether a feature is discriminative enough
         self.admissible_features = set()
         self.admissible()
 
-    #converts text to dictionary keyed by sentiment
-    #handles unknown words
-    #with list of sentences as the values
-    #also gets transition matrix
+
     def parse_text(self, std_format_text):
+        '''
+        converts text to: {"sentiment": [sentence1, sentence2, ...]}
+        replaces the first instance of every word with <unk>
+        also gets transition matrix between states for sentences
+        '''
 
         sentence_sentiment_dict = {s: [] for s in self.sentiments}
 
         states = ["<r>", "neg", "neu", "pos", "</r>"]
         A = pd.DataFrame(np.zeros((5,5)), index = states, columns = states)
         A.loc["</r>", "</r>"] = 1 #just to prevent NAs
-
-        #with open(path, 'rb') as f:
-        #    text = f.read()
-
-        #text = text.decode("utf-8")
-
-        #text = re.split(r'\n\n', text)
-        #text.pop()
 
         for review in std_format_text:
 
@@ -145,15 +145,18 @@ class Classifier:
                 if sentiment not in ["<r>", "</r>"]:
                     sentence_sentiment_dict[sentiment].append(sentence)
 
+                #increments the transition count
                 A.loc[prev_sentiment, sentiment] += 1
                 prev_sentiment = sentiment
 
         try:
+            #sometimes '' gets added
             self.seen_words.remove('')
         except:
             pass
 
-        s = A.sum(axis=1)
+        #normalizes the A matrix to be a probability
+        s = A.sum(axis=1) #sums over rows
 
         for item in s.index:
             A.loc[item,:] = A.loc[item,:]/s.loc[item] #divide row by row sum
@@ -162,6 +165,9 @@ class Classifier:
 
     @staticmethod
     def clean_review(review):
+        '''
+        turns a review-as-string into a list of string sentences
+        '''
         r = review.split("\n")
         review_type = r.pop(0)
         category, label, number = review_type.split("_")
@@ -174,6 +180,9 @@ class Classifier:
     #tokenizes sentence
     @staticmethod
     def tokenize_sentence(line, n):
+        '''
+        takes a sentence-as-string and returns a list of tokens
+        '''
         sentiment, sentence = line.split('\t')
         #make all lower: 
         sentence = sentence.lower()
@@ -193,6 +202,10 @@ class Classifier:
         return sentiment, sentence
 
     def sum_counts(self, count_dict, n):
+        '''
+        given a dictionary: {'sentiment': {'feature': count, }, }
+        returns the total feature counts for each sentiment: {'sentiment': sum_features}
+        '''
         sum_dict = {"pos": 0, "neg":0, "neu": 0}
         if n == 1:
             for s in self.sentiments:
@@ -203,8 +216,19 @@ class Classifier:
                     sum_dict[s] += sum([v for k, v in count_dict[s][word1].items()])
         return sum_dict
 
-    #gets unigrams if n = 1, bigrams if n = 2, etc.
     def make_features(self, parsed_text, z):
+        '''
+        given a dictionary with sentences keyed by sentiment,
+            with tokenized sentences:
+            {"sentiment": [[w, w, w, ...], [w, w, w, ...], ...], }
+
+
+        gets unigrams if z = 1, bigrams if z = 2, etc.
+
+        returns a count of unigrams or bigrams
+        uses nested dictionaries, so a bigram output looks like:
+        {'sentiment': {'w_n_minus_one': {'w_n': count}, }, }
+        '''
         feature_dict = {"pos": {}, "neg": {}, "neu": {}}
 
         for sentiment in parsed_text:
@@ -233,11 +257,19 @@ class Classifier:
 
         return feature_dict
 
-    #smoothes counts
-    #returns the updated count
+
     def good_turing(self, feature_dict, n, cutoff):
         '''
-        we don't worry about 0 counts because of katz backoff
+        implements good-turing smoothing
+
+        in the case of bigrams & trigrams, does not add a probability for events seen zero times
+        this is because katz backoff does not require this
+
+        adds a probability for zero events in the unigram case
+
+        treats all conditional features, (f|sentiment), as part of the same corpus
+        an alternative approach is to treat each sentiment as a separate corpus
+        does not change results substantially
         '''
         smoothed_feature_dict = deepcopy(feature_dict)
         freq_of_freqs = {}
@@ -292,6 +324,11 @@ class Classifier:
 
     #do this just for unigrams
     def admissible(self, kind = "chi"):
+        '''
+        implements an admissibility criterion
+
+        all features with more "certainty" than the criterion are added to admissible_features
+        '''
         if kind == "chi": 
             for word in self.seen_words:
                 word_count = [self.gt_unigrams[x].get(word, 0) for x in self.sentiments]
@@ -306,6 +343,9 @@ class Classifier:
             pass
 
     def return_prob(self, sentiment, words):
+        '''
+        returns the sum of logged probabilities for a sentence in the unigram case
+        '''
         if self.n == 1:
             log_prob_sum = 0
             for word in words:
@@ -322,8 +362,12 @@ class Classifier:
                 log_prob_sum += self.katz_backoff_prob(bigram, sentiment)
             return log_prob_sum
 
-    #give this a unigram, bigram, or trigram
     def katz_backoff_prob(self, n_gram, sentiment):
+        '''
+        returns the sum of logged probabilities for katz backoff
+
+        likely still has bugs
+        '''
         if len(n_gram) == 2:
             #if we've seen the bigram
             w1, w2 = n_gram
@@ -365,9 +409,16 @@ class Classifier:
 
 
     def viterbi(self, review):
+        '''
+        implement the viterbi algorithm 
+
+        see ch6 of book
+
+        ground_truth records correct sentence sentiment
+        '''
         r = self.clean_review(review)
-        r.pop()
-        r.pop(0)
+        r.pop() #removes </r> token
+        r.pop(0) #removes <r> token
 
         ground_truth = [self.tokenize_sentence(x, self.n)[0] for x in r]
 
@@ -383,7 +434,7 @@ class Classifier:
         #this is the probabiliy of being in a state at time t
         viterbi_prob = pd.DataFrame(np.zeros([len(self.A.index), num_sentences]), index= self.A.index)
 
-        #this is the most probable 
+        #this is the most probable previous state
         backpointer = pd.DataFrame(np.zeros([len(self.A.index), num_sentences]), index = self.A.index)
 
         #initialize
@@ -423,6 +474,9 @@ class Classifier:
         return sequence, ground_truth
 
     def correct_share(self, reviews):
+        '''
+        compares output of viterbi for all reviews to the ground truth
+        '''
 
         total = 0
         correct = 0
