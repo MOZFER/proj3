@@ -31,12 +31,12 @@ def chi_squarify(totaltokens, totalfeatures, smoother = 0):
     positive = totaltokens[0] + totalfeatures[0] +2 * smoother
     neutral = totaltokens[1] + totalfeatures[1] +2* smoother
     negative = totaltokens[2] + totalfeatures[2] + 2*smoother
-    predictedfrequencies.append(float(positive*features/n))
-    predictedfrequencies.append(float(neutral*features/n))
-    predictedfrequencies.append(float(negative*features/n))
-    predictedfrequencies.append(float(positive*nonfeatures/n))
-    predictedfrequencies.append(float(neutral*nonfeatures/n))
-    predictedfrequencies.append(float(negative*nonfeatures/n))
+    predictedfrequencies.append(float(positive*features/float(n)))
+    predictedfrequencies.append(float(neutral*features/float(n)))
+    predictedfrequencies.append(float(negative*features/float(n)))
+    predictedfrequencies.append(float(positive*nonfeatures/float(n)))
+    predictedfrequencies.append(float(neutral*nonfeatures/float(n)))
+    predictedfrequencies.append(float(negative*nonfeatures/float(n)))
     observedfrequencies.append(totalfeatures[0] + smoother)
     observedfrequencies.append(totalfeatures[1] + smoother)
     observedfrequencies.append(totalfeatures[2] + smoother)
@@ -45,6 +45,9 @@ def chi_squarify(totaltokens, totalfeatures, smoother = 0):
     observedfrequencies.append(totaltokens[2] - totalfeatures[2] + smoother)
     chistatistic = 0  
     for x in range (0,6):
+        #print predictedfrequencies
+        if predictedfrequencies[x] == 0:
+            print totaltokens, totalfeatures
         a = predictedfrequencies[x] - observedfrequencies[x]
         b = a*a/predictedfrequencies[x]
         chistatistic = b + chistatistic
@@ -122,9 +125,13 @@ class Classifier:
 
         sentence_sentiment_dict = {s: [] for s in self.sentiments}
 
-        states = ["<r>", "neg", "neu", "pos", "</r>"]
-        A = pd.DataFrame(np.zeros((5,5)), index = states, columns = states)
+        #states = ["<r>", "neg", "neu", "pos", "</r>"]
+        states = ["<p>","<u>","<g>", "neg", "neu", "pos", "</r>"]]
+        #A = pd.DataFrame(np.zeros((5,5)), index = states, columns = states)
+        A = pd.DataFrame(np.zeros((7,7)), index = states, columns = states)
         A.loc["</r>", "</r>"] = 1 #just to prevent NAs
+
+
 
         for review in std_format_text:
 
@@ -142,7 +149,7 @@ class Classifier:
                         self.seen_words.add(sentence[word]) #add to seen words
                         sentence[word] = self.unk #overwrite
 
-                if sentiment not in ["<r>", "</r>"]:
+                if sentiment not in ["<r>","<p>","<u>","<g>","</r>"]:
                     sentence_sentiment_dict[sentiment].append(sentence)
 
                 #increments the transition count
@@ -173,7 +180,17 @@ class Classifier:
         category, label, number = review_type.split("_")
 
         #add begin and end review tokens
-        r = ["<r>\t"] + r + ["</r>\t"]
+        
+        #r = ["<r>\t"] + r + ["</r>\t"]
+
+        
+        if label = 'pos':
+            r = ["<p>\t"] + r + ["</r>\t"]
+        if label = 'neu':
+            r = ["<u>\t"] + r + ["</r>\t"]
+        if label = 'neg':
+            r = ["<g>\t"] + r + ["</r>\t"]
+        
 
         return r
 
@@ -334,7 +351,7 @@ class Classifier:
                 word_count = [self.gt_unigrams[x].get(word, 0) for x in self.sentiments]
                 sentiment_count = [self.gt_unigram_counts[x] for x in self.sentiments]
 
-                chi_sqr = chi_squarify(sentiment_count, word_count)
+                chi_sqr = chi_squarify(sentiment_count, word_count,1)
 
                 if chi_sqr > self.c:
                     self.admissible_features.add(word)
@@ -417,7 +434,7 @@ class Classifier:
         ground_truth records correct sentence sentiment
         '''
         r = self.clean_review(review)
-        r.pop() #removes </r> token
+        starttoken = r.pop() #removes </r> token
         r.pop(0) #removes <r> token
 
         ground_truth = [self.tokenize_sentence(x, self.n)[0] for x in r]
@@ -440,7 +457,12 @@ class Classifier:
         #initialize
         for sentiment in self.sentiments:
             b = sentences[0]
-            viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<r>", sentiment], 2) + self.return_prob(sentiment, b)
+            if starttoken = "<p>":
+                viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<p>", sentiment], 2) + self.return_prob(sentiment, b)
+            if starttoken = "<u>":    
+                viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<u>", sentiment], 2) + self.return_prob(sentiment, b)
+            if starttoken = "<g>":    
+                viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<g>", sentiment], 2) + self.return_prob(sentiment, b)
             backpointer.loc[sentiment, 0] = 0.
 
         #intermedate steps (recursion)
