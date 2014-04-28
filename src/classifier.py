@@ -300,7 +300,6 @@ class Classifier:
         mat = deepcopy(trans_matrix)
 
         mat = mat + 0.000001
-        #mat = mat/1.000005
 
         for s1 in self.sentiments + ["<r>"]: #go down rows
             #go across cols
@@ -309,7 +308,7 @@ class Classifier:
 
             for s2 in self.sentiments:
                 m = mat.loc[s1, s2]
-                mat.loc[s1, s2] = total_prob*((m + (.1)*x)/(m + (.3)*x))
+                mat.loc[s1, s2] = total_prob*((m + (1.)*x)/(q + (3.)*x))
 
         return mat
 
