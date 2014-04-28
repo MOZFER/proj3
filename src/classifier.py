@@ -45,9 +45,6 @@ def chi_squarify(totaltokens, totalfeatures, smoother = 0):
     observedfrequencies.append(totaltokens[2] - totalfeatures[2] + smoother)
     chistatistic = 0  
     for x in range (0,6):
-        #print predictedfrequencies
-        if predictedfrequencies[x] == 0:
-            print totaltokens, totalfeatures
         a = predictedfrequencies[x] - observedfrequencies[x]
         b = a*a/predictedfrequencies[x]
         chistatistic = b + chistatistic
@@ -133,14 +130,10 @@ class Classifier:
 
         sentence_sentiment_dict = {s: [] for s in self.sentiments}
 
-        #states = ["<r>", "neg", "neu", "pos", "</r>"]
-        states = ["<p>","<u>","<g>", "neg", "neu", "pos", "</r>"]]
-        #A = pd.DataFrame(np.zeros((5,5)), index = states, columns = states)
-        A = pd.DataFrame(np.zeros((7,7)), index = states, columns = states)
+        states = ["<r>", "neg", "neu", "pos", "</r>"]
+        A = pd.DataFrame(np.zeros((5,5)), index = states, columns = states)
         A.loc["</r>", "</r>"] = 1 #just to prevent NAs
         A_sentiments = {"pos": deepcopy(A), "neg": deepcopy(A), "neu": deepcopy(A)}
-
-
 
         for review in std_format_text:
 
@@ -158,7 +151,7 @@ class Classifier:
                         self.seen_words.add(sentence[word]) #add to seen words
                         #sentence[word] = self.unk #overwrite
 
-                if sentiment not in ["<r>","<p>","<u>","<g>","</r>"]:
+                if sentiment not in ["<r>", "</r>"]:
                     sentence_sentiment_dict[sentiment].append(sentence)
                     self.priors[review_sentiment]["count"] += 1
                     self.priors[review_sentiment][sentiment] += 1
@@ -202,19 +195,9 @@ class Classifier:
         category, review_sentiment, number = review_type.split("_")
 
         #add begin and end review tokens
-        
-        #r = ["<r>\t"] + r + ["</r>\t"]
+        r = ["<r>\t"] + r + ["</r>\t"]
 
-        
-        if label = 'pos':
-            r = ["<p>\t"] + r + ["</r>\t"]
-        if label = 'neu':
-            r = ["<u>\t"] + r + ["</r>\t"]
-        if label = 'neg':
-            r = ["<g>\t"] + r + ["</r>\t"]
-        
-
-        return r
+        return review_sentiment, r
 
     #tokenizes sentence
     @staticmethod
@@ -407,7 +390,7 @@ class Classifier:
                     word_count = [self.gt_unigrams[x].get(word, 0) for x in self.sentiments]
                     sentiment_count = [self.gt_unigram_counts[x] for x in self.sentiments]
 
-                chi_sqr = chi_squarify(sentiment_count, word_count,1)
+                    chi_sqr = chi_squarify(sentiment_count, word_count)
 
                     if chi_sqr > self.c:
                         self.admissible_features.add(word)
@@ -557,8 +540,8 @@ class Classifier:
 
         ground_truth records correct sentence sentiment
         '''
-        r = self.clean_review(review)
-        starttoken = r.pop() #removes </r> token
+        review_sentiment, r = self.clean_review(review)
+        r.pop() #removes </r> token
         r.pop(0) #removes <r> token
 
         ground_truth = [self.tokenize_sentence(x, self.n)[0] for x in r]
@@ -581,12 +564,11 @@ class Classifier:
         #initialize
         for sentiment in self.sentiments:
             b = sentences[0]
-            if starttoken = "<p>":
-                viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<p>", sentiment], 2) + self.return_prob(sentiment, b)
-            if starttoken = "<u>":    
-                viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<u>", sentiment], 2) + self.return_prob(sentiment, b)
-            if starttoken = "<g>":    
-                viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<g>", sentiment], 2) + self.return_prob(sentiment, b)
+            viterbi_prob.loc[sentiment, 0] = \
+            math.log(self.A_sentiments[review_sentiment].loc["<r>", sentiment], 2) +\
+            self.return_prob(sentiment, b) # + \
+            #math.log(self.priors[review_sentiment][sentiment], 2)
+
             backpointer.loc[sentiment, 0] = 0.
 
         #intermedate steps (recursion)
