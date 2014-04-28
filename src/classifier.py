@@ -304,10 +304,12 @@ class Classifier:
 
         for s1 in self.sentiments + ["<r>"]: #go down rows
             #go across cols
-            total_prob = sum([mat.loc[s1, x] for x in self.sentiments])
+            total_prob = sum([mat.loc[s1, z] for z in self.sentiments])
+            q = total_prob
 
             for s2 in self.sentiments:
-                mat.loc[s1, s2] = total_prob*(mat.loc[s1, s2] + .1*x)/(total_prob + .3*x)
+                m = mat.loc[s1, s2]
+                mat.loc[s1, s2] = total_prob*((m + (.1)*x)/(m + (.3)*x))
 
         return mat
 
@@ -378,7 +380,7 @@ class Classifier:
             return ( ( (c+1)*(ffd[c+1]/ffd[c]) ) - ( c*( (k + 1)*ffd[k+1] )/ffd[1] ) )/(1 - ( (k+1)*(ffd[k+1])/ffd[1] ) )
 
     #do this just for unigrams
-    def admissible(self, stat = "chi"):
+    def admissible(self, stat):
         '''
         implements an admissibility criterion
 
