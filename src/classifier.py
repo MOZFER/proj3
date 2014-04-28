@@ -59,18 +59,27 @@ def chi_squarify(totaltokens, totalfeatures, smoother = 0):
 
 class Classifier:
     '''
-    when we init
-
-
     n is the length of n-grams to use, should be set to 1 or 2
     k is the good-turing cutoff (i.e. we stop smoothing when count is > k)
     x is the smoothing parameter for the transition matrix
     c is the chi-square stat
+    t is the top # of features that should be used
+    l is the log-odds ratio for admissibility
     '''
-    def __init__(self, std_format_text, n = 1, k = 5, x = 0, c = 5.): #n can equal 1,2,3
+    def __init__(self, std_format_text, n = 1, k = 5, x = 0.001, c = 5, t = 3, l = 1.2, l2 = 4, stat = "chi"): #n can equal 1,2,3
 
         self.n = n
         self.c = c
+        self.t = t
+        self.l = l
+        self.l2 = l2
+        self.c_0 = 0
+        self.c_2_0 = 0
+        self.priors = {
+            "pos": {"count": 0, "pos": 0, "neg": 0, "neu": 0}, 
+            "neg": {"count": 0, "pos": 0, "neg": 0, "neu": 0}, 
+            "neu": {"count": 0, "pos": 0, "neg": 0, "neu": 0}
+        } #prob of sentence being a sentiment given the review sentiment
 
         self.sentiments = ["neg", "neu", "pos"]
 
@@ -78,18 +87,13 @@ class Classifier:
         self.seen_words = set(["!", ".", ",", "<s>", "</s>", ":", ";", "'", "\"", "/", "\\"]) 
         self.unk = "<unk>"
 
-        self.A, self.sentences_by_sentiment = self.parse_text(std_format_text)
+        self.A, self.A_sentiments, self.sentences_by_sentiment = self.parse_text(std_format_text)
 
-        #makes the transitions less biased towards staying in same state
-        #does something very similar to laplace smoothing
-        #with large x, transitions tend towards parity
-        if x > 0:  
-            for s1 in self.sentiments + ["<r>"]: #go down rows
-                #go across cols
-                total_prob = sum([self.A.loc[s1, x] for x in self.sentiments])
-
-                for s2 in self.sentiments:
-                    self.A.loc[s1, s2] = total_prob*(self.A.loc[s1, s2] + .1*x)/(total_prob + .3*x)
+        #smooth trans matricies
+        if x > 0:
+            self.A = self.smooth_transitions(self.A, x)
+            for sentiment in self.sentiments:
+                self.A_sentiments[sentiment] = self.smooth_transitions(self.A_sentiments[sentiment], x)
 
         if n >= 1:
             self.unigrams          = self.make_features(self.sentences_by_sentiment, 1)
@@ -101,16 +105,20 @@ class Classifier:
             self.bigram_counts     = self.sum_counts(self.bigrams, 2)
             self.gt_bigrams        = self.good_turing(self.bigrams,  2, k)
             self.gt_bigram_counts  = self.sum_counts(self.gt_bigrams, 2)
+            self.seen_bigrams      = self.get_all_features(self.gt_bigrams)
         if n >= 3:
             self.trigrams          = self.make_features(self.sentences_by_sentiment, 3)
             self.trigram_counts    = self.sum_counts(self.trigrams, 3)
             self.gt_trigrams       = self.good_turing(self.trigrams, 3, k)
             self.gt_trigram_counts = self.sum_counts(self.gt_trigrams, 3)
+            self.seen_trigrams     = self.get_all_features(self.gt_trigrams)
 
         #this is a set of admissible features
         #provides a quick check whether a feature is discriminative enough
-        self.admissible_features = set()
-        self.admissible()
+        self.admissible_features = set()        
+        self.confidence = {} #records confidence scores for features
+
+        self.admissible(stat)
 
 
     def parse_text(self, std_format_text):
@@ -125,10 +133,11 @@ class Classifier:
         states = ["<r>", "neg", "neu", "pos", "</r>"]
         A = pd.DataFrame(np.zeros((5,5)), index = states, columns = states)
         A.loc["</r>", "</r>"] = 1 #just to prevent NAs
+        A_sentiments = {"pos": deepcopy(A), "neg": deepcopy(A), "neu": deepcopy(A)}
 
         for review in std_format_text:
 
-            r = self.clean_review(review)
+            review_sentiment, r = self.clean_review(review)
 
             prev_sentiment = r.pop(0).split('\t')[0] #starting sentiment, <r>
 
@@ -140,13 +149,17 @@ class Classifier:
                 for word in range(len(sentence)):
                     if sentence[word] not in self.seen_words:
                         self.seen_words.add(sentence[word]) #add to seen words
-                        sentence[word] = self.unk #overwrite
+                        #sentence[word] = self.unk #overwrite
 
                 if sentiment not in ["<r>", "</r>"]:
                     sentence_sentiment_dict[sentiment].append(sentence)
+                    self.priors[review_sentiment]["count"] += 1
+                    self.priors[review_sentiment][sentiment] += 1
 
                 #increments the transition count
                 A.loc[prev_sentiment, sentiment] += 1
+                A_sentiments[review_sentiment].loc[prev_sentiment, sentiment] += 1
+
                 prev_sentiment = sentiment
 
         try:
@@ -161,7 +174,16 @@ class Classifier:
         for item in s.index:
             A.loc[item,:] = A.loc[item,:]/s.loc[item] #divide row by row sum
 
-        return A, sentence_sentiment_dict
+        for sentiment in A_sentiments:
+            s_temp = A_sentiments[sentiment].sum(axis=1)
+            for item in s_temp.index:
+                A_sentiments[sentiment].loc[item,:] = A_sentiments[sentiment].loc[item,:]/s_temp.loc[item]
+
+        for r_s in self.priors:
+            for s in self.sentiments:
+                self.priors[r_s][s] = self.priors[r_s][s] / self.priors[r_s]["count"]
+
+        return A, A_sentiments, sentence_sentiment_dict
 
     @staticmethod
     def clean_review(review):
@@ -170,12 +192,12 @@ class Classifier:
         '''
         r = review.split("\n")
         review_type = r.pop(0)
-        category, label, number = review_type.split("_")
+        category, review_sentiment, number = review_type.split("_")
 
         #add begin and end review tokens
         r = ["<r>\t"] + r + ["</r>\t"]
 
-        return r
+        return review_sentiment, r
 
     #tokenizes sentence
     @staticmethod
@@ -257,6 +279,37 @@ class Classifier:
 
         return feature_dict
 
+    def get_all_features(self, n_gram_dict):
+        '''
+        given a nested dict of ngrams
+        pulls out all ngrams and returns them
+        '''
+        n_grams = set()
+
+        for s in self.sentiments:
+            for n_minus_one_gram in n_gram_dict[s]:
+                for w in n_gram_dict[s][n_minus_one_gram]:
+                    n_grams.add((n_minus_one_gram,) + (w,))
+
+        return n_grams
+
+    def smooth_transitions(self, trans_matrix, x):
+        '''makes the transitions less biased towards staying in same state
+        does something very similar to laplace smoothing
+        with large x, transitions tend towards parity'''
+        mat = deepcopy(trans_matrix)
+
+        mat = mat + 0.000001
+        #mat = mat/1.000005
+
+        for s1 in self.sentiments + ["<r>"]: #go down rows
+            #go across cols
+            total_prob = sum([mat.loc[s1, x] for x in self.sentiments])
+
+            for s2 in self.sentiments:
+                mat.loc[s1, s2] = total_prob*(mat.loc[s1, s2] + .1*x)/(total_prob + .3*x)
+
+        return mat
 
     def good_turing(self, feature_dict, n, cutoff):
         '''
@@ -291,6 +344,8 @@ class Classifier:
                     if word not in smoothed_feature_dict[s]:
                         smoothed_feature_dict[s][word] = freq_of_freqs[1]/sum([v for k,v in freq_of_freqs.items()])
 
+            self.c_0 = freq_of_freqs[1]/sum([v for k,v in freq_of_freqs.items()])
+
         #for bigrams/trigrams
         elif n > 1:
             for s in self.sentiments:
@@ -323,44 +378,112 @@ class Classifier:
             return ( ( (c+1)*(ffd[c+1]/ffd[c]) ) - ( c*( (k + 1)*ffd[k+1] )/ffd[1] ) )/(1 - ( (k+1)*(ffd[k+1])/ffd[1] ) )
 
     #do this just for unigrams
-    def admissible(self, kind = "chi"):
+    def admissible(self, stat = "chi"):
         '''
         implements an admissibility criterion
 
         all features with more "certainty" than the criterion are added to admissible_features
         '''
-        if kind == "chi": 
-            for word in self.seen_words:
-                word_count = [self.gt_unigrams[x].get(word, 0) for x in self.sentiments]
-                sentiment_count = [self.gt_unigram_counts[x] for x in self.sentiments]
+        if stat == "chi": 
+            if self.n >= 1:
+                for word in self.seen_words:
+                    word_count = [self.gt_unigrams[x].get(word, 0) for x in self.sentiments]
+                    sentiment_count = [self.gt_unigram_counts[x] for x in self.sentiments]
 
-                chi_sqr = chi_squarify(sentiment_count, word_count)
+                    chi_sqr = chi_squarify(sentiment_count, word_count)
 
-                if chi_sqr > self.c:
-                    self.admissible_features.add(word)
+                    if chi_sqr > self.c:
+                        self.admissible_features.add(word)
 
-        elif kind == "logodds":
-            pass
+                    self.confidence[word] = chi_sqr                
+
+        elif stat == "log":
+            if self.n >= 1:
+                for word in self.seen_words:
+                    log_odds = []
+
+                    for s in self.sentiments:
+                        num = self.gt_unigrams[s][word]/self.gt_unigram_counts[s]
+                        denom = sum([self.gt_unigrams[x][word]/self.gt_unigram_counts[x] for x in self.sentiments if x != s])
+                        log_odds.append(num/denom)
+
+                    log_odds = math.log(max(log_odds), 2)
+
+                    if log_odds > self.l:
+                        self.admissible_features.add(word)
+
+                    self.confidence[word] = log_odds
+
+            if self.n >= 2:
+                for bigram in self.seen_bigrams:
+
+                    prob = {"pos": 0, "neg": 0, "neu": 0}
+
+                    log_odds = []
+
+                    for s in self.sentiments:
+                        if bigram[0] in self.gt_bigrams[s]:
+                            prob[s] = self.gt_bigrams[s][bigram[0]].get(bigram[1], self.c_0)/sum(self.gt_bigrams[s][bigram[0]].values())
+                        else:
+                            prob[s] = self.c_0
+
+                    for s in self.sentiments:
+                        log_odds.append(prob[s]/sum([prob[x] for x in self.sentiments if x != s]))
+
+                    log_odds = math.log(max(log_odds), 2)
+
+                    if log_odds > self.l2:
+                        self.admissible_features.add(bigram)
+
+                    self.confidence[bigram] = log_odds
 
     def return_prob(self, sentiment, words):
         '''
         returns the sum of logged probabilities for a sentence in the unigram case
         '''
-        if self.n == 1:
-            log_prob_sum = 0
+        
+        log_prob_sum = 0
+
+        if self.n >= 1:
             for word in words:
                 if word in self.admissible_features:
                     log_prob_sum += math.log(self.gt_unigrams[sentiment][word]/self.gt_unigram_counts[sentiment], 2)
                 else:
                     continue
                     #log_prob_sum += math.log(self.gt_unigrams[sentiment]['<unk>']/self.gt_unigram_counts[sentiment], 2)
+
+        if self.n >= 2:
+            for bigram in window(words, 2):
+                if bigram in self.admissible_features:
+                    try:
+                        log_prob_sum += math.log(self.gt_bigrams[sentiment][bigram[0]][bigram[1]]/sum(self.gt_bigrams[sentiment][bigram[0]].values()), 2)
+                    except KeyError:
+                        log_prob_sum += self.c_0
+                else:
+                    continue
+
+        if log_prob_sum == 0:
+            return self.c_0
+        else:
             return log_prob_sum
 
-        if self.n == 2:
+    def return_prob_modified(self, sentiment, words):
+        if self.n >= 1:
             log_prob_sum = 0
-            for bigram in window(words, 2):
-                log_prob_sum += self.katz_backoff_prob(bigram, sentiment)
+
+            candidate = []
+            for word in words:
+                candidate.append((self.confidence.get(word, -10000000), word))
+
+            candidate.sort(reverse=True)
+
+            for f in range(min((self.t), len(words))):
+                if candidate[f][0] != None:
+                    #if word's not seen, just give it c_0
+                    log_prob_sum += math.log(self.gt_unigrams[sentiment].get(candidate[f][1],self.c_0)/self.gt_unigram_counts[sentiment], 2)
+
             return log_prob_sum
+
 
     def katz_backoff_prob(self, n_gram, sentiment):
         '''
@@ -384,6 +507,7 @@ class Classifier:
                 #if w1 is in bigrams but w2 is not in bigrams[w1], weighted unigram
 
                 beta_complement = 0
+
                 s = sum([v for k, v in self.bigrams[sentiment][w1].items()])
 
                 for word in self.gt_bigrams[sentiment][w1]:
@@ -416,7 +540,7 @@ class Classifier:
 
         ground_truth records correct sentence sentiment
         '''
-        r = self.clean_review(review)
+        review_sentiment, r = self.clean_review(review)
         r.pop() #removes </r> token
         r.pop(0) #removes <r> token
 
@@ -424,10 +548,10 @@ class Classifier:
 
         sentences = [self.tokenize_sentence(x, self.n)[1] for x in r]
 
-        for sentence in sentences:
-            for word in range(len(sentence)):
-                if sentence[word] not in self.seen_words:
-                    sentence[word] = self.unk
+        #for sentence in sentences:
+        #    for word in range(len(sentence)):
+        #        if sentence[word] not in self.seen_words:
+        #            sentence[word] = self.unk
 
         num_sentences = len(sentences)
 
@@ -440,7 +564,11 @@ class Classifier:
         #initialize
         for sentiment in self.sentiments:
             b = sentences[0]
-            viterbi_prob.loc[sentiment, 0] = math.log(self.A.loc["<r>", sentiment], 2) + self.return_prob(sentiment, b)
+            viterbi_prob.loc[sentiment, 0] = \
+            math.log(self.A_sentiments[review_sentiment].loc["<r>", sentiment], 2) +\
+            self.return_prob(sentiment, b) # + \
+            #math.log(self.priors[review_sentiment][sentiment], 2)
+
             backpointer.loc[sentiment, 0] = 0.
 
         #intermedate steps (recursion)
@@ -452,14 +580,17 @@ class Classifier:
                 viterbi_prob.loc[s,t], backpointer.loc[s,t] = \
                     max( \
                     [ ( viterbi_prob.loc[s_prime, t-1] + \
-                    math.log(self.A.loc[s_prime, s], 2) + \
+                    math.log(self.A_sentiments[review_sentiment].loc[s_prime, s], 2) + \
                     self.return_prob(s, sentences[t]), s_prime) \
                     for s_prime in self.sentiments ] )
+
+                    #math.log(self.priors[review_sentiment][sentiment], 2), s_prime) \
+                    #for s_prime in self.sentiments ] )
 
         #end step
         viterbi_prob.loc["</r>", num_sentences - 1], backpointer.loc["</r>", num_sentences - 1] = \
             max( [ ( viterbi_prob.loc[s, num_sentences - 1] + \
-            math.log(self.A.loc[s, "</r>"], 2), s) for s in self.sentiments])
+            math.log(self.A_sentiments[review_sentiment].loc[s, "</r>"], 2), s) for s in self.sentiments])
 
         sequence = [ backpointer.loc["</r>", num_sentences-1] ]
         row_lookup = backpointer.loc["</r>", num_sentences-1]
