@@ -66,13 +66,16 @@ class Classifier:
     t is the top # of features that should be used
     l is the log-odds ratio for admissibility
     '''
-    def __init__(self, std_format_text, n = 1, k = 5, x = 0.001, c = 5, t = 3, l = 1.2, l2 = 4, stat = "chi"): #n can equal 1,2,3
+    def __init__(self, std_format_text, n = 1, k = 5, q = 1 ,x = 0.0001, c = 5, t = 3, l = 1.3, l2 = 4, z = 1, stat = "log", smoothing="gt"): #n can equal 1,2,3
 
         self.n = n
         self.c = c
         self.t = t
         self.l = l
+        self.z = z
         self.l2 = l2
+        self.q = q
+        self.smoothing = smoothing
         self.c_0 = 0
         self.c_2_0 = 0
         self.priors = {
@@ -100,25 +103,34 @@ class Classifier:
             self.unigram_counts    = self.sum_counts(self.unigrams, 1)
             self.gt_unigrams       = self.good_turing(self.unigrams, 1, k)
             self.gt_unigram_counts = self.sum_counts(self.gt_unigrams, 1)
+            self.l_unigrams, self.l_unigram_default = self.laplace(self.unigrams, 1)
+            self.l_unigram_counts    = self.sum_counts(self.l_unigrams, 1)
         if n >= 2:
             self.bigrams           = self.make_features(self.sentences_by_sentiment, 2)
             self.bigram_counts     = self.sum_counts(self.bigrams, 2)
             self.gt_bigrams        = self.good_turing(self.bigrams,  2, k)
-            self.gt_bigram_counts  = self.sum_counts(self.gt_bigrams, 2)
+            self.l_bigrams, self.bigram_default = self.laplace(self.bigrams, 2)
+            self.l_bigram_counts    = self.sum_counts(self.l_bigrams, 2)
             self.seen_bigrams      = self.get_all_features(self.gt_bigrams)
+            self.gt_bigram_counts  = self.sum_counts(self.gt_bigrams, 2)
         if n >= 3:
             self.trigrams          = self.make_features(self.sentences_by_sentiment, 3)
             self.trigram_counts    = self.sum_counts(self.trigrams, 3)
             self.gt_trigrams       = self.good_turing(self.trigrams, 3, k)
-            self.gt_trigram_counts = self.sum_counts(self.gt_trigrams, 3)
+            self.l_trigrams, self.trigram_default = self.laplace(self.trigrams, 3)
+            self.l_trigram_counts    = self.sum_counts(self.l_trigrams, 3)
             self.seen_trigrams     = self.get_all_features(self.gt_trigrams)
+            self.gt_trigram_counts = self.sum_counts(self.gt_trigrams, 3)
 
         #this is a set of admissible features
         #provides a quick check whether a feature is discriminative enough
         self.admissible_features = set()        
         self.confidence = {} #records confidence scores for features
 
-        self.admissible(stat)
+        if smoothing == "gt":
+            self.gt_admissible(stat)
+        elif smoothing == "lap":
+            self.l_admissible(stat)
 
 
     def parse_text(self, std_format_text):
@@ -149,7 +161,7 @@ class Classifier:
                 for word in range(len(sentence)):
                     if sentence[word] not in self.seen_words:
                         self.seen_words.add(sentence[word]) #add to seen words
-                        #sentence[word] = self.unk #overwrite
+                        sentence[word] = self.unk #overwrite
 
                 if sentiment not in ["<r>", "</r>"]:
                     sentence_sentiment_dict[sentiment].append(sentence)
@@ -229,6 +241,10 @@ class Classifier:
         returns the total feature counts for each sentiment: {'sentiment': sum_features}
         '''
         sum_dict = {"pos": 0, "neg":0, "neu": 0}
+
+        if self.smoothing == "lap":
+            sum_dict = {"pos":  self.z * (len(self.seen_words)**n), "neg": self.z * (len(self.seen_words)**n), "neu": self.z * (len(self.seen_words)**n)}
+
         if n == 1:
             for s in self.sentiments:
                 sum_dict[s] = sum([v for k, v in count_dict[s].items()])
@@ -245,7 +261,7 @@ class Classifier:
             {"sentiment": [[w, w, w, ...], [w, w, w, ...], ...], }
 
 
-        gets unigrams if z = 1, bigrams if z = 2, etc.
+        gets bigramsif z = 1, bigrams if z = 2, etc.
 
         returns a count of unigrams or bigrams
         uses nested dictionaries, so a bigram output looks like:
@@ -378,8 +394,34 @@ class Classifier:
             #c* equaiton from page 103
             return ( ( (c+1)*(ffd[c+1]/ffd[c]) ) - ( c*( (k + 1)*ffd[k+1] )/ffd[1] ) )/(1 - ( (k+1)*(ffd[k+1])/ffd[1] ) )
 
+    def laplace(self, feature_dict, n):
+        '''
+        smoothes count
+        '''
+
+        smoothed_feature_dict = deepcopy(feature_dict)
+
+        default_count = 0
+
+        if n == 1:
+            for s in self.sentiments:
+                for k, v in smoothed_feature_dict[s].items():
+                    smoothed_feature_dict[s][k] = feature_dict[s][k] + self.z * (1/len(self.seen_words))
+
+            default_count = self.z * 1/len(self.seen_words)
+
+        if n > 1:
+            for s in self.sentiments:
+                for f1 in smoothed_feature_dict[s]:
+                    for f2 in smoothed_feature_dict[s][f1]:
+                        smoothed_feature_dict[s][f1][f2] = feature_dict[s][f1][f2] + self.z * (1/len(self.seen_words)**n)
+
+            default_count = self.z * (1/len(self.seen_words))**n
+
+        return smoothed_feature_dict, default_count
+
     #do this just for unigrams
-    def admissible(self, stat):
+    def gt_admissible(self, stat):
         '''
         implements an admissibility criterion
 
@@ -438,6 +480,66 @@ class Classifier:
 
                     self.confidence[bigram] = log_odds
 
+    #do this just for unigrams
+    def l_admissible(self, stat):
+        '''
+        implements an admissibility criterion
+
+        all features with more "certainty" than the criterion are added to admissible_features
+        '''
+        if stat == "chi": 
+            if self.n >= 1:
+                for word in self.seen_words:
+                    word_count = [self.l_unigrams[x].get(word, 0) for x in self.sentiments]
+                    sentiment_count = [self.l_unigram_counts[x] for x in self.sentiments]
+
+                    chi_sqr = chi_squarify(sentiment_count, word_count)
+
+                    if chi_sqr > self.c:
+                        self.admissible_features.add(word)
+
+                    self.confidence[word] = chi_sqr                
+
+        elif stat == "log":
+            if self.n >= 1:
+                for word in self.seen_words:
+                    log_odds = []
+
+                    for s in self.sentiments:
+                        num = self.l_unigrams[s].get(word, self.l_unigram_default)/self.l_unigram_counts[s]
+                        denom = sum([self.l_unigrams[x].get(word, self.l_unigram_default)/self.l_unigram_counts[x] for x in self.sentiments if x != s])
+                        log_odds.append(num/denom)
+
+                    log_odds = math.log(max(log_odds), 2)
+
+                    if log_odds > self.l:
+                        self.admissible_features.add(word)
+
+                    self.confidence[word] = log_odds
+
+            if self.n >= 2:
+                for bigram in self.seen_bigrams:
+
+                    prob = {"pos": 0, "neg": 0, "neu": 0}
+
+                    log_odds = []
+
+                    for s in self.sentiments:
+                        if bigram[0] in self.l_bigrams[s]:
+                            prob[s] = self.l_bigrams[s][bigram[0]].get(bigram[1], self.c_0)/sum(self.l_bigrams[s][bigram[0]].values())
+                        else:
+                            prob[s] = self.c_0
+
+                    for s in self.sentiments:
+                        log_odds.append(prob[s]/sum([prob[x] for x in self.sentiments if x != s]))
+
+                    log_odds = math.log(max(log_odds), 2)
+
+                    if log_odds > self.l2:
+                        self.admissible_features.add(bigram)
+
+                    self.confidence[bigram] = log_odds
+
     def return_prob(self, sentiment, words):
         '''
         returns the sum of logged probabilities for a sentence in the unigram case
@@ -448,7 +550,10 @@ class Classifier:
         if self.n >= 1:
             for word in words:
                 if word in self.admissible_features:
-                    log_prob_sum += math.log(self.gt_unigrams[sentiment][word]/self.gt_unigram_counts[sentiment], 2)
+                    if self.smoothing == "gt":
+                        log_prob_sum += math.log(self.gt_unigrams[sentiment][word]/self.gt_unigram_counts[sentiment], 2)
+                    elif self.smoothing == "lap":
+                        log_prob_sum += math.log(self.l_unigrams[sentiment].get(word, self.l_unigram_default)/self.l_unigram_counts[sentiment], 2)
                 else:
                     continue
                     #log_prob_sum += math.log(self.gt_unigrams[sentiment]['<unk>']/self.gt_unigram_counts[sentiment], 2)
@@ -502,7 +607,7 @@ class Classifier:
                     s = sum([v for k, v in self.bigrams[sentiment][w1].items()])
                     return math.log(self.gt_bigrams[sentiment][w1][w2] / s, 2)
                 else:
-                    return 0
+                    return self.c_0
             elif w1 in self.bigrams[sentiment]:
                 #intuitively: if w1 is not in bigrams, then default to unigram with full prob
                 #if w1 is in bigrams but w2 is not in bigrams[w1], weighted unigram
@@ -520,15 +625,15 @@ class Classifier:
                 if w1 in self.admissible_features or w2 in self.admissible_features:
                     return math.log(alpha*self.gt_unigrams[sentiment][w2], 2)
                 else:
-                    return 0
+                    return self.c_0
 
             elif w1 not in self.bigrams[sentiment]:
                 if w2 in self.gt_unigrams[sentiment] and w2 in self.admissible_features:
                     return math.log(self.gt_unigrams[sentiment][w2], 2)
                 else:
-                    return 0
+                    return self.c_0
             else:
-                return 0
+                return self.c_0
         else:
             return math.log(self.gt_unigrams[sentiment][n_gram], 2)
 
@@ -549,10 +654,10 @@ class Classifier:
 
         sentences = [self.tokenize_sentence(x, self.n)[1] for x in r]
 
-        #for sentence in sentences:
-        #    for word in range(len(sentence)):
-        #        if sentence[word] not in self.seen_words:
-        #            sentence[word] = self.unk
+        for sentence in sentences:
+            for word in range(len(sentence)):
+                if sentence[word] not in self.seen_words:
+                    sentence[word] = self.unk
 
         num_sentences = len(sentences)
 
@@ -567,6 +672,7 @@ class Classifier:
             b = sentences[0]
             viterbi_prob.loc[sentiment, 0] = \
             math.log(self.A_sentiments[review_sentiment].loc["<r>", sentiment], 2) +\
+            self.q*math.log(self.priors[review_sentiment][sentiment], 2) + \
             self.return_prob(sentiment, b) # + \
             #math.log(self.priors[review_sentiment][sentiment], 2)
 
@@ -582,6 +688,7 @@ class Classifier:
                     max( \
                     [ ( viterbi_prob.loc[s_prime, t-1] + \
                     math.log(self.A_sentiments[review_sentiment].loc[s_prime, s], 2) + \
+                    self.q* math.log(self.priors[review_sentiment][sentiment], 2) + \
                     self.return_prob(s, sentences[t]), s_prime) \
                     for s_prime in self.sentiments ] )
 
@@ -621,3 +728,21 @@ class Classifier:
                     correct += 1
 
         return correct/total
+
+    def print_test(self, reviews, path):
+        total = 0
+        header = "id,answer\n"
+
+        conversion = {"pos": "1", "neu": "0", "neg":"-1"}
+
+        with open(path, "w") as f:
+            f.write(header)
+            for review in reviews:
+                predicted, ground_truth = self.viterbi(review)
+                for p in predicted:
+                    y = ','.join([str(total), conversion[p] + "\n"])
+                    f.write(y)
+                    total += 1
+
+        return "done"
+
