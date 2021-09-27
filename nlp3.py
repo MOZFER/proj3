@@ -157,7 +157,7 @@ if __name__ == '__main__':
     neu = 0
     neg = 0
     #print a[2]
-    print 'Id,answer'
+    print ('Id,answer')
     for q in range(0,1224): 
         t = baseline_bow(test[q],emissions,1)
         if t == 1:
